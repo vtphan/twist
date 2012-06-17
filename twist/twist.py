@@ -1,8 +1,14 @@
+'''
+version: 0.2
+'''
+
 from webob import Request
 import types
+from urllib import urlencode
+from urlparse import parse_qs
 
 ##----------------------------------------------------------------##
-class route(object):
+class Route(object):
 	table = {}
 	inv_table = {}
 
@@ -21,58 +27,32 @@ class route(object):
 	def inverse(self, cls_name):
 		return self.inv_table[cls_name] if cls_name in inv_table else None
 
+	@classmethod
+	def show(self):
+		print 'Route.table:', self.table,'\nRoute.inv_table:',self.inv_table,'\n'
+
 ##----------------------------------------------------------------##
 class Base(type):
     def __new__(cls, name, bases, dct):
-        if name != 'app':
-        	path = dct.get('__alias__', name)
-        	route.set(path, type.__new__(cls, name, bases, dct))
-        	return route.get(path)
+        if name != 'App':
+        	path = dct.get('__alias__', name.lower())
+        	new_class = type.__new__(cls, name, bases, dct)
+        	Route.set(path, new_class)
+        	Route.show()
+        	return new_class
         return type.__new__(cls, name, bases, dct)
 
 ##----------------------------------------------------------------##
 
-class app(object):
+class App(object):
 	__metaclass__ = Base
-	
-	@classmethod
-	def run(self, port=8000, key=None):
-		from wsgiref.simple_server import make_server
-		server = make_server('', port, self)
-		print 'serving on port', port
-		server.serve_forever()
 
-	def __init__(self, env, start_response):
-		frags = env['PATH_INFO'].split('/')
-		if issubclass(app, type(self)):
-			self.start_response = start_response
-			con = route.get(frags[1])
-			if con==None:
-				raise Exception('controller not found for '+env.get('PATH_INFO',''))
-			self._con = con(env, start_response)
-			self.request = None
-		else:
-			self._cname = frags[1]
-			self._params = frags[2:]
-			self.request = Request(env)
+	def __init__(self, env=None):
+		self.request = Request(env) if env else None
 
-	def __iter__(self):
-		self._con._dispatch()
-		self.start_response('200 OK', [('Content-type', 'text/plain')])
-		yield "Hello world"
-
-	def _dispatch(self):
-		try:
-			method = getattr(self, self.request.method.lower())
-		except Exception as ex:
-			print '> Error retrieving method:', ex
-		try:
-			out = method(*self._params)
-		except Exception as ex:
-			print '> Error executing', method, ex
-		else:
-			print '>', out
-
+	def error(self, msg):
+		pass
+		
 	def redirect(self, con):
 		pass
 
@@ -86,5 +66,49 @@ class app(object):
 		if cls_name not in route.inverse: return ''
 		pass
 
+
+##----------------------------------------------------------------##
+
+class Twist(object):
+	@classmethod
+	def run(self, port=8000, key=None):
+		from wsgiref.simple_server import make_server
+		server = make_server('', port, self)
+		print 'serving on port', port
+		server.serve_forever()
+
+	def __init__(self, env, start_response):
+		frags = env['PATH_INFO'].strip('/').split('/')
+		self.start_response = start_response
+		con = Route.get(frags[0])
+		if not con:
+			con = Route.get('')
+			if not con:
+				raise Exception('controller not found')
+			self.app = con(env)
+			self.params = frags
+		else:
+			self.app = con(env)
+			self.params = frags[1:]
+		if not hasattr(self.app, self.app.request.method.lower()):
+			raise Exception('method not found')
+		self.method = getattr(self.app, self.app.request.method.lower())
+		qs_pairs = parse_qs(self.app.request.query_string).items()
+		self.kw = { k:v[0] if len(v)==1 else v for k,v in qs_pairs }
+		print '>qs:', self.kw
+
+	def __iter__(self):
+		self.dispatch()
+		self.start_response('200 OK', [('Content-type', 'text/plain')])
+		yield "Hello world"
+
+	def dispatch(self):
+		try:
+			self.output = self.method(*self.params, **self.kw)
+		except Exception as ex:
+			print '> Error executing', self.method, ex
+
+
+##----------------------------------------------------------------##
 
 ##----------------------------------------------------------------##
