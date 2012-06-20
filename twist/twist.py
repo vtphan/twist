@@ -24,17 +24,17 @@ class Interrupt (Exception):
 
 ##----------------------------------------------------------------##
 class Base(type):
-    def __new__(cls, name, bases, dct):
-    	route = dct.get('route', name.lower())
-    	for base in bases:
-    		if base.__name__ == 'Twist':
-    			for method in METHODS:
-    				if method in dct:
-    					func_name = get_route_name(route,method)
-    					if hasattr(base, func_name):
-    						raise Exception(func_name + 'Function already exists.')
-    					setattr(base, func_name, dct[method])
-        return type.__new__(cls, name, bases, dct)
+	def __new__(cls, name, bases, dct):
+		route = dct.get('route', name.lower())
+		for base in bases:
+			if base.__name__ == 'Twist':
+				for method in METHODS:
+					if method in dct:
+						func_name = get_route_name(route,method)
+						if hasattr(base, func_name):
+							raise Exception(func_name + 'Function already exists.')
+						setattr(base, func_name, dct[method])
+	    return type.__new__(cls, name, bases, dct)
 
 ##----------------------------------------------------------------##
 
@@ -94,9 +94,9 @@ class Twist (object):
 			print mesg
 
 	def redirect(self, url, code=None):
-	    self.response.status = code if code else 303 if self.request.http_version == "HTTP/1.1" else 302
-	    self.response.location = urljoin(self.request.url, url)
-	    raise Interrupt()
+		self.response.status = code if code else 303 if self.request.http_version == "HTTP/1.1" else 302
+		self.response.location = urljoin(self.request.url, url)
+		raise Interrupt()
 
 ##----------------------------------------------------------------##
 
