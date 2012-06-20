@@ -2,20 +2,30 @@
 version: 0.2
 '''
 
-from webob import Request
+import os
+import sys
 import types
+import traceback
+from webob import Request, Response, static
 from urllib import urlencode
-from urlparse import parse_qs
+from urlparse import parse_qs, urljoin
 
+LOGGING = True
+DEV = True
+APP_DIR = '.'
+
+##----------------------------------------------------------------##
 METHODS = ['get','post','put','delete']
 
 def get_route_name(route, method):
 	return 'route_' + route + '_' + method.lower()
+class Interrupt (Exception):
+	pass
 
 ##----------------------------------------------------------------##
 class Base(type):
     def __new__(cls, name, bases, dct):
-    	route = dct.get('__alias__', name.lower())
+    	route = dct.get('route', name.lower())
     	for base in bases:
     		if base.__name__ == 'Twist':
     			for method in METHODS:
@@ -28,49 +38,71 @@ class Base(type):
 
 ##----------------------------------------------------------------##
 
-class Twist(object):
+class Twist (object):
 	__metaclass__ = Base
 
-	@classmethod
-	def run(self, port=8000, key=None):
-		from wsgiref.simple_server import make_server
-		server = make_server('', port, self)
-		print 'serving on port', port
-		server.serve_forever()
-
 	def __init__(self, env, start_response):
-		self.request = Request(env)
+		self.env = env
 		self.start_response = start_response
+		self.request = Request(env)
+		self.response = Response()
 
-		#
-		# Get name, params and verify name exists
-		#
-		frags = env['PATH_INFO'].strip('/').split('/')
-		name = get_route_name(frags[0], self.request.method)
-		self.params = frags[1:]
-		if not hasattr(self, name):
-			raise Exception('Method not found:'+name)
-		
-		#
-		# Get query strings and save into keyword parameters
-		#
-		qs_pairs = parse_qs(self.request.query_string).items()
-		self.kw_params = { k:v[0] if len(v)==1 else v for k,v in qs_pairs }
-
-		#
-		# Execute routed method and save to output
-		#
 		try:
-			self.output = getattr(self,name)(*self.params, **self.kw_params)
-		except Exception as ex:
-			print '> Error executing', name, ex
+			if self.request.method == 'HEAD': return
+
+			frags = env['PATH_INFO'].strip('/').split('/')
+
+			# Get name, params and verify name exists
+			#
+			name = get_route_name(frags[0], self.request.method)
+			self.params = frags[1:]
+			if not hasattr(self, name):
+				self.error(404, 'Not found: '+frags[0])
+			
+			# Save query strings into keyword parameters
+			#
+			qs_pairs = parse_qs(self.request.query_string).items()
+			self.kw_params = { k:v[0] if len(v)==1 else v for k,v in qs_pairs }
+
+			# Execute routed method and save to output
+			#
+			self.response.body = getattr(self,name)(*self.params, **self.kw_params)
+		except Interrupt as ex: 
+			pass
+		except:
+			self.cleanup()
 
 	def __iter__(self):
-		self.start_response('200 OK', [('Content-type', 'text/plain')])
-		yield "Hello world"
+		self.start_response(self.response.status, self.response.headers.items())
+		yield self.response.body
 
+	def static_file(self, filename):
+		file_app = static.FileApp(filename)
+		self.response = self.request.get_response(file_app)
+		raise Interrupt()
 
+	def error(self, code=500, mesg=''):
+		self.response.status = code
+		self.response.body = mesg
+		raise Interrupt()
+
+	def cleanup(self):
+		mesg = traceback.format_exc() if DEV else 'Error executing app'
+		self.response.status = 500
+		self.response.body = mesg
+		if DEV:
+			print mesg
+
+	def redirect(self, url, code=None):
+	    self.response.status = code if code else 303 if self.request.http_version == "HTTP/1.1" else 302
+	    self.response.location = urljoin(self.request.url, url)
+	    raise Interrupt()
 
 ##----------------------------------------------------------------##
 
+def run(port=8000, key=None):
+	from wsgiref.simple_server import make_server
+	server = make_server('', port, Twist)
+	print 'serving on port', port
+	server.serve_forever()
 ##----------------------------------------------------------------##
