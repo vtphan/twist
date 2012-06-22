@@ -1,5 +1,7 @@
 '''
+package: twist
 version: 0.2
+author: Vinhthuy Phan
 '''
 
 import os
@@ -25,6 +27,19 @@ METHODS = ['get','post','put','delete']
 
 class Interrupt (Exception):
 	pass
+
+def extract_vars(form):
+	d = {}
+	for key, value in form.items():
+		if isinstance(value,list) and len(value)==1:
+			value = value[0]
+		if not key in d:
+			d[key] = value
+		elif isinstance(d[key],list):
+			d[key].append(value)
+		else:
+			d[key]=[d[key],value]
+	return d
 
 ##----------------------------------------------------------------##
 class Route(object):
@@ -66,15 +81,18 @@ class App (object):
 		self.request = Request(env)
 		self.response = Response()
 
+	def head(self, *arg, **kw_arg):
+		return ''
+
 	def static_file(self, filename):
 		file_app = static.FileApp(os.path.join(STATIC_DIR, filename))
 		self.response = self.request.get_response(file_app)
 		raise Interrupt()
 
 	def error(self, code=500, mesg=''):
-		self.response.status = code
-		self.response.body = mesg
-		raise Interrupt()
+	 	self.response.status = code
+	 	self.response.body = mesg
+	 	raise Interrupt()
 
 	def redirect(self, url, code=None):
 		self.response.status = code if code else 303 if self.request.http_version == "HTTP/1.1" else 302
@@ -88,51 +106,54 @@ class App (object):
 		self.response.charset = 'utf-8'
 		return self._template.render(**kw)
 
+##----------------------------------------------------------------##
 
 class Twist (object):
 
 	def __init__(self, env, start_response):
-		start_response = start_response
+		self.start_response = start_response
+		self.response = threading.local()
 
 		try:
-
 			frags = env['PATH_INFO'].strip('/').split('/')
 
 			controller = Route.get(frags[0])
-			if not controller:
-				self.error(404, 'Controller not found: '+frags[0])
 			method = env['REQUEST_METHOD'].lower()
-			if method == 'HEAD': return
-			if not hasattr(controller, method):
-				self.error(404, 'Method not allow: '+env['REQUEST_METHOD'])
+			if not controller or not hasattr(controller, method):
+				self.flush('404 Not Found', 'Not found: '+frags[0]+' '+env['REQUEST_METHOD'])
+				return
 
 			app = controller(env)
 
 			# Get params and kw_params
 			#
 			params = frags[1:]
-			qs_pairs = parse_qs(app.request.query_string).items()
-			kw_params = { k:v[0] if len(v)==1 else v for k,v in qs_pairs }
+			kw_params = extract_vars(app.request.params)
 
 			# Execute routed method and save to output
 			#
 			output = getattr(app,method)(*params, **kw_params)
-			if isinstance(output,unicode): app.response.text  = output
-			else: app.response.body = output
-		except Interrupt as ex: 
+			if isinstance(output,unicode): 
+				app.response.text  = output
+			else: 
+				app.response.body = output
+		except Interrupt: 
 			pass
 		except:
-			app.response.status = 500
-			app.response.body =  traceback.format_exc() if DEV else 'Error executing app'
+			app.response.status = '500 Internal Server Error'
+			app.response.body = traceback.format_exc() if DEV else 'Unknown error'
 			if DEV: 
 				print app.response.body
-		start_response(app.response.status, app.response.headers.items())
-		self.response = threading.local()
-		self.response.body = app.response.body
+		self.flush(app.response.status, app.response.body, app.response.headers.items())
 
 	def __iter__(self):
+		self.start_response(self.response.status, self.response.headers)
 		yield self.response.body
 
+	def flush(self, status, body='', headers=[('Content-Type','text/plain')]):
+		self.response.status = status
+		self.response.body = body
+		self.response.headers = headers
 
 ##----------------------------------------------------------------##
 
@@ -141,4 +162,5 @@ def run(port=8000, key=None):
 	server = make_server('', port, Twist)
 	print 'serving on port', port
 	server.serve_forever()
+
 ##----------------------------------------------------------------##
