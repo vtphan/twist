@@ -13,5 +13,6 @@ setup(
     long_description='A wsgi web framework.',
     install_requires=[
         "webob",
+	"Jinja2",
     ],
 )
