@@ -10,13 +10,15 @@ import threading
 from webob import Request, Response, static
 from urllib import urlencode
 from urlparse import parse_qs, urljoin
-from crystal import Template
+from jinja2 import Environment, PackageLoader
 
 LOGGING = True
 DEV = True
 APP_DIR = '.'
 TEMPLATE_DIR = './template'
 STATIC_DIR = './static'
+
+jinja_env = Environment(loader=PackageLoader('twist', TEMPLATE_DIR))
 
 ##----------------------------------------------------------------##
 METHODS = ['get','post','put','delete']
@@ -50,7 +52,7 @@ class Base(type):
 			Route.set(handle, new_class)
 
 			t_file = dct.get('template', None)
-			template = Template(os.path.join(TEMPLATE_DIR,t_file),'__file__') if t_file else None
+			template = jinja_env.get_template(t_file) if t_file else None
 			setattr(new_class, '_template', template)
 			
 		return new_class
@@ -79,10 +81,11 @@ class App (object):
 		self.response.location = urljoin(self.request.url, url)
 		raise Interrupt()
 
-	def html(self, **kw):
+	def render(self, **kw):
 		if not hasattr(self, '_template'):
 			self.error(404, 'Template Not found')
 		self.response.content_type = 'text/html'
+		self.response.charset = 'utf-8'
 		return self._template.render(**kw)
 
 
@@ -113,7 +116,9 @@ class Twist (object):
 
 			# Execute routed method and save to output
 			#
-			app.response.body = getattr(app,method)(*params, **kw_params)
+			output = getattr(app,method)(*params, **kw_params)
+			if isinstance(output,unicode): app.response.text  = output
+			else: app.response.body = output
 		except Interrupt as ex: 
 			pass
 		except:
