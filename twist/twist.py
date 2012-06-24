@@ -23,7 +23,6 @@ STATIC_DIR = './static'
 jinja_env = Environment(loader=PackageLoader('twist', TEMPLATE_DIR))
 
 ##----------------------------------------------------------------##
-METHODS = ['get','post','put','delete']
 
 class Interrupt (Exception):
 	pass
@@ -42,33 +41,24 @@ def extract_vars(form):
 	return d
 
 ##----------------------------------------------------------------##
-class Route(object):
-	table = {}
-
-	@classmethod
-	def set(self, path, cls):
-		if path in self.table: raise Exception('route:',path,'exists.')
-		self.table[path] = cls
-
-	@classmethod
-	def get(self, path):
-		return self.table[path] if path in self.table else None
-
-	@classmethod
-	def show(self):
-		print 'Route.table:', self.table,'\n'
-
-##----------------------------------------------------------------##
 class Base(type):
 	def __new__(cls, name, bases, dct):
 		new_class = type.__new__(cls, name, bases, dct)
-		if name != 'App':
-			handle = dct.get('alias', name.lower())
-			Route.set(handle, new_class)
+		setattr(new_class, '_route_', {'': new_class})
 
-			t_file = dct.get('template', None)
+		if name=='App':
+			setattr(new_class,'_path_', '')
+		else:
+			# Set route
+			handle = dct.get('_alias_', name.lower()).strip('/')
+			for base in bases:
+				if hasattr(base, '_path_') and hasattr(base, '_route_'):
+					base._route_[handle] = new_class
+			
+			# Set template
+			t_file = dct.get('_template_', None)
 			template = jinja_env.get_template(t_file) if t_file else None
-			setattr(new_class, '_template', template)
+			setattr(new_class, '_tmpl_', template)
 			
 		return new_class
 
@@ -81,8 +71,12 @@ class App (object):
 		self.request = Request(env)
 		self.response = Response()
 
-	def head(self, *arg, **kw_arg):
-		return ''
+	@classmethod
+	def _lookup_(self, frags):
+		if len(frags)==0 or frags[0] not in self._route_:
+			return (self, frags)
+		name = frags.pop(0)
+		return self._route_[name]._lookup_(frags)
 
 	def static_file(self, filename):
 		file_app = static.FileApp(os.path.join(STATIC_DIR, filename))
@@ -100,7 +94,7 @@ class App (object):
 		raise Interrupt()
 
 	def render(self, **kw):
-		if not hasattr(self, '_template'):
+		if not hasattr(self, '_tmpl_'):
 			self.error(404, 'Template Not found')
 		self.response.content_type = 'text/html'
 		self.response.charset = 'utf-8'
@@ -116,35 +110,27 @@ class Twist (object):
 
 		try:
 			frags = env['PATH_INFO'].strip('/').split('/')
-
-			controller = Route.get(frags[0])
 			method = env['REQUEST_METHOD'].lower()
-			if not controller or not hasattr(controller, method):
-				self.flush('404 Not Found', 'Not found: '+frags[0]+' '+env['REQUEST_METHOD'])
+			cls, params = App._lookup_(frags)
+			if cls.__name__ == 'App' or not hasattr(cls, method):
+				self.flush('404 Not Found', 'Not found: '+method+' '.join(frags))
 				return
-
-			app = controller(env)
-
-			# Get params and kw_params
-			#
-			params = frags[1:]
+			app = cls(env)
 			kw_params = extract_vars(app.request.params)
-
-			# Execute routed method and save to output
-			#
 			output = getattr(app,method)(*params, **kw_params)
 			if isinstance(output,unicode): 
 				app.response.text  = output
 			else: 
 				app.response.body = output
+			self.flush(app.response.status, app.response.body, app.response.headers.items())
 		except Interrupt: 
-			pass
+			self.flush(app.response.status, app.response.body, app.response.headers.items())
 		except:
-			app.response.status = '500 Internal Server Error'
-			app.response.body = traceback.format_exc() if DEV else 'Unknown error'
+			self.response.status = '500 Internal Server Error'
+			self.response.body = traceback.format_exc() if DEV else 'Unknown error'
+			self.response.headers = [('Content-Type','text/plain')]
 			if DEV: 
-				print app.response.body
-		self.flush(app.response.status, app.response.body, app.response.headers.items())
+				print self.response.body
 
 	def __iter__(self):
 		self.start_response(self.response.status, self.response.headers)
