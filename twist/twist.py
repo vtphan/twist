@@ -3,7 +3,7 @@ package: twist
 version: testing
 author: Vinhthuy Phan
 '''
-
+import re
 import os
 import sys
 import types
@@ -20,6 +20,12 @@ APP_DIR = '.'
 TEMPLATE_DIR = './template'
 STATIC_DIR = './static'
 
+HTTP_CODE = {
+	404 : '404 Not Found',
+	405 : '405 Method Not Allowed',
+	500 : '500 Interal Server Error',
+}
+
 jinja_env = Environment(loader=PackageLoader('twist', TEMPLATE_DIR))
 
 ##----------------------------------------------------------------##
@@ -27,18 +33,12 @@ jinja_env = Environment(loader=PackageLoader('twist', TEMPLATE_DIR))
 class Interrupt (Exception):
 	pass
 
-def extract_vars(form):
-	d = {}
-	for key, value in form.items():
-		if isinstance(value,list) and len(value)==1:
-			value = value[0]
-		if not key in d:
-			d[key] = value
-		elif isinstance(d[key],list):
-			d[key].append(value)
-		else:
-			d[key]=[d[key],value]
-	return d
+def convert_name(name):
+	''' convert camelcase names to pretty paths:
+		Example:  convert_name(ArticleByMonth) -> article-by-month
+	'''
+	s = re.sub('(.)([A-Z][a-z]+)', r'\1-\2', name)
+	return re.sub('([a-z0-9])([A-Z])', r'\1-\2', s).lower().strip('/')
 
 ##----------------------------------------------------------------##
 class Base(type):
@@ -47,19 +47,20 @@ class Base(type):
 		setattr(new_class, '_route_', {'': new_class})
 
 		if name=='App':
-			setattr(new_class,'_path_', '')
+			setattr(new_class,'_path_', '/')
 		else:
 			# Set route
-			handle = dct.get('_alias_', name.lower()).strip('/')
+			handle = dct.get('_alias_', convert_name(name))
 			for base in bases:
-				if hasattr(base, '_path_') and hasattr(base, '_route_'):
+				if issubclass(base, App):
 					base._route_[handle] = new_class
-			
+					setattr(new_class,'_path_', os.path.join(base._path_,handle))
+
 			# Set template
 			t_file = dct.get('_template_', None)
 			template = jinja_env.get_template(t_file) if t_file else None
 			setattr(new_class, '_tmpl_', template)
-			
+		
 		return new_class
 
 ##----------------------------------------------------------------##
@@ -98,54 +99,69 @@ class App (object):
 			self.error(404, 'Template Not found')
 		self.response.content_type = 'text/html'
 		self.response.charset = 'utf-8'
-		return self._template.render(**kw)
+		return self._tmpl_.render(**kw)
 
 ##----------------------------------------------------------------##
 
 class Twist (object):
 
-	def __init__(self, env, start_response):
-		self.start_response = start_response
-		self.response = threading.local()
+	def __init__(self, **config):
+		pass
 
+	def __call__(self, env, start_response):
+		self.start_response = start_response
+		frags = env['PATH_INFO'].strip('/').split('/')
+		method = env['REQUEST_METHOD'].lower()
 		try:
-			frags = env['PATH_INFO'].strip('/').split('/')
-			method = env['REQUEST_METHOD'].lower()
 			cls, params = App._lookup_(frags)
-			if cls.__name__ == 'App' or not hasattr(cls, method):
-				self.flush('404 Not Found', 'Not found: '+method+' '.join(frags))
-				return
+			if cls.__name__ == 'App':
+				return self.error(404, 'Controller not found')
+			if not hasattr(cls, method):
+				return self.error(405)
+
 			app = cls(env)
-			kw_params = extract_vars(app.request.params)
+			kw_params = self.extract_vars(app.request.params)
 			output = getattr(app,method)(*params, **kw_params)
 			if isinstance(output,unicode): 
 				app.response.text  = output
-			else: 
+			elif isinstance(output,str): 
 				app.response.body = output
-			self.flush(app.response.status, app.response.body, app.response.headers.items())
+			else:
+				return self.error(500, 'Return type of controller must be str or unicode.')
 		except Interrupt: 
-			self.flush(app.response.status, app.response.body, app.response.headers.items())
+			pass
 		except:
-			self.response.status = '500 Internal Server Error'
-			self.response.body = traceback.format_exc() if DEV else 'Unknown error'
-			self.response.headers = [('Content-Type','text/plain')]
-			if DEV: 
-				print self.response.body
+			return self.error(500, traceback.format_exc() if DEV else 'Unknown error')
 
-	def __iter__(self):
-		self.start_response(self.response.status, self.response.headers)
-		yield self.response.body
+		start_response(app.response.status, app.response.headers.items())
+		return app.response.body
 
-	def flush(self, status, body='', headers=[('Content-Type','text/plain')]):
-		self.response.status = status
-		self.response.body = body
-		self.response.headers = headers
+	#----------------------------------------------------------------------
+	def error(self, code, message=''):
+		self.start_response(HTTP_CODE[code], [('Content-Type','text/plain')])
+		if DEV:
+			print message or HTTP_CODE[code]
+		return message or HTTP_CODE[code]
+
+	#----------------------------------------------------------------------
+	def extract_vars(self, form):
+		d = {}
+		for key, value in form.items():
+			if isinstance(value,list) and len(value)==1:
+				value = value[0]
+			if not key in d:
+				d[key] = value
+			elif isinstance(d[key],list):
+				d[key].append(value)
+			else:
+				d[key]=[d[key],value]
+		return d
 
 ##----------------------------------------------------------------##
 
 def run(port=8000, key=None):
 	from wsgiref.simple_server import make_server
-	server = make_server('', port, Twist)
+	server = make_server('', port, Twist())
 	print 'serving on port', port
 	server.serve_forever()
 
