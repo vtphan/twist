@@ -1,6 +1,6 @@
 '''
 package: twist
-version: testing
+version: 0.2.1
 author: Vinhthuy Phan
 '''
 import re
