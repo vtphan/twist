@@ -21,6 +21,7 @@ TEMPLATE_DIR = './template'
 STATIC_DIR = './static'
 
 HTTP_CODE = {
+	400 : '400 Bad Request',
 	404 : '404 Not Found',
 	405 : '405 Method Not Allowed',
 	500 : '500 Interal Server Error',
@@ -41,18 +42,21 @@ def convert_name(name):
 	return re.sub('([a-z0-9])([A-Z])', r'\1-\2', s).lower().strip('/')
 
 ##----------------------------------------------------------------##
-class Base(type):
+class ViewBuilder(type):
 	def __new__(cls, name, bases, dct):
 		new_class = type.__new__(cls, name, bases, dct)
 		setattr(new_class, '_route_', {'': new_class})
 
-		if name=='App':
+		if name=='View':
 			setattr(new_class,'_path_', '/')
 		else:
 			# Set route
 			handle = dct.get('_alias_', convert_name(name))
+			if '_alias_' not in dct:
+				setattr(new_class, '_alias_', handle)
+
 			for base in bases:
-				if issubclass(base, App):
+				if issubclass(base, View):
 					base._route_[handle] = new_class
 					setattr(new_class,'_path_', os.path.join(base._path_,handle))
 
@@ -65,19 +69,25 @@ class Base(type):
 
 ##----------------------------------------------------------------##
 
-class App (object):
-	__metaclass__ = Base
+class View (threading.local):
+	__metaclass__ = ViewBuilder
 
 	def __init__(self, env):
 		self.request = Request(env)
 		self.response = Response()
 
 	@classmethod
-	def _lookup_(self, frags):
-		if len(frags)==0 or frags[0] not in self._route_:
-			return (self, frags)
+	def _lookup_(cls, frags):
+		if len(frags)==0:
+			if cls.__name__==cls._route_[''].__name__:
+				return (cls, frags)
+			return cls._route_['']._lookup_([])
+
+		if frags[0] not in cls._route_:
+			return (cls, frags)
+
 		name = frags.pop(0)
-		return self._route_[name]._lookup_(frags)
+		return cls._route_[name]._lookup_(frags)
 
 	def static_file(self, filename):
 		file_app = static.FileApp(os.path.join(STATIC_DIR, filename))
@@ -90,7 +100,7 @@ class App (object):
 	 	raise Interrupt()
 
 	def redirect(self, url, code=None):
-		self.response.status = code if code else 303 if self.request.http_version == "HTTP/1.1" else 302
+		self.response.status = code or 303 if self.request.http_version=='HTTP/1.1' else 302
 		self.response.location = urljoin(self.request.url, url)
 		raise Interrupt()
 
@@ -113,28 +123,26 @@ class Twist (object):
 		frags = env['PATH_INFO'].strip('/').split('/')
 		method = env['REQUEST_METHOD'].lower()
 		try:
-			cls, params = App._lookup_(frags)
-			if cls.__name__ == 'App':
-				return self.error(404, 'Controller not found')
-			if not hasattr(cls, method):
-				return self.error(405)
+			view, params = View._lookup_(frags)
+			if view.__name__ == 'View': return self.error(404)
+			if not hasattr(view, method): return self.error(405)
 
-			app = cls(env)
-			kw_params = self.extract_vars(app.request.params)
-			output = getattr(app,method)(*params, **kw_params)
+			view = view(env)
+			kw_params = self.extract_vars(view.request.params)
+			output = getattr(view,method)(*params, **kw_params)
 			if isinstance(output,unicode): 
-				app.response.text  = output
+				view.response.text  = output
 			elif isinstance(output,str): 
-				app.response.body = output
+				view.response.body = output
 			else:
-				return self.error(500, 'Return type of controller must be str or unicode.')
+				return self.error(500, 'View must return str or unicode')
 		except Interrupt: 
 			pass
 		except:
-			return self.error(500, traceback.format_exc() if DEV else 'Unknown error')
+			return self.error(400, traceback.format_exc() if DEV else '')
 
-		start_response(app.response.status, app.response.headers.items())
-		return app.response.body
+		start_response(view.response.status, view.response.headers.items())
+		return view.response.body
 
 	#----------------------------------------------------------------------
 	def error(self, code, message=''):
