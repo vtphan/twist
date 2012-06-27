@@ -1,6 +1,6 @@
 '''
 package: twist
-version: 0.2.1
+version: 0.2.2
 author: Vinhthuy Phan
 '''
 import re
@@ -30,10 +30,19 @@ HTTP_CODE = {
 jinja_env = Environment(loader=PackageLoader('twist', TEMPLATE_DIR))
 
 ##----------------------------------------------------------------##
+class UnknownHandler (Exception):
+	def __init__(self, code, message=''):
+		self.code = code
+		self.message = message
 
+	def __str__(self):
+		return self.message
+
+##----------------------------------------------------------------##
 class Interrupt (Exception):
 	pass
 
+##----------------------------------------------------------------##
 def convert_name(name):
 	''' convert camelcase names to pretty paths:
 		Example:  convert_name(ArticleByMonth) -> article-by-month
@@ -45,25 +54,21 @@ def convert_name(name):
 class ViewBuilder(type):
 	def __new__(cls, name, bases, dct):
 		new_class = type.__new__(cls, name, bases, dct)
-		setattr(new_class, '_route_', {'': new_class})
-
-		if name=='View':
-			setattr(new_class,'_path_', '/')
-		else:
-			# Set route
-			handle = dct.get('_alias_', convert_name(name))
-			if '_alias_' not in dct:
-				setattr(new_class, '_alias_', handle)
-
+		new_class._route_ = {'': new_class}
+		if name!='View':
+			# Set route in base class
+			new_class._alias_ = handle = dct.get('_alias_', convert_name(name))
+			if handle=='' and all(b.__name__!='View' for b in bases):
+				raise Exception('Empty _alias_ class must be subclass of View')
 			for base in bases:
 				if issubclass(base, View):
+					if handle in base._route_ and base is not View:
+						raise Exception('Duplicate handle: '+handle)
 					base._route_[handle] = new_class
-					setattr(new_class,'_path_', os.path.join(base._path_,handle))
 
 			# Set template
 			t_file = dct.get('_template_', None)
-			template = jinja_env.get_template(t_file) if t_file else None
-			setattr(new_class, '_tmpl_', template)
+			new_class._tmpl_ = jinja_env.get_template(t_file) if t_file else None
 		
 		return new_class
 
@@ -76,27 +81,14 @@ class View (threading.local):
 		self.request = Request(env)
 		self.response = Response()
 
-	@classmethod
-	def _lookup_(cls, frags):
-		if len(frags)==0:
-			if cls.__name__==cls._route_[''].__name__:
-				return (cls, frags)
-			return cls._route_['']._lookup_([])
-
-		if frags[0] not in cls._route_:
-			return (cls, frags)
-
-		name = frags.pop(0)
-		return cls._route_[name]._lookup_(frags)
-
 	def static_file(self, filename):
 		file_app = static.FileApp(os.path.join(STATIC_DIR, filename))
 		self.response = self.request.get_response(file_app)
 		raise Interrupt()
 
-	def error(self, code=500, mesg=''):
+	def error(self, code=500, message=''):
 	 	self.response.status = code
-	 	self.response.body = mesg
+	 	self.response.body = message
 	 	raise Interrupt()
 
 	def redirect(self, url, code=None):
@@ -111,6 +103,34 @@ class View (threading.local):
 		self.response.charset = 'utf-8'
 		return self._tmpl_.render(**kw)
 
+	@classmethod
+	def get(cls, *args, **kwargs): raise UnknownHandler(404)
+
+	@classmethod
+	def post(cls, *args, **kwargs): raise UnknownHandler(404)
+
+	@classmethod
+	def put(cls, *args, **kwargs): raise UnknownHandler(404)
+
+	@classmethod
+	def delete(cls, *args, **kwargs): raise UnknownHandler(404)
+
+	@classmethod
+	def head(cls, *args, **kwargs): raise UnknownHandler(404)
+
+##----------------------------------------------------------------##
+
+def locate_view(tokens, cur_view=View):
+	dct = cur_view._route_
+	if len(tokens)==0:
+		if cur_view.__name__ == dct[''].__name__:
+			return (cur_view, [])
+		return locate_view([], dct[''])
+	if tokens[0] not in dct:
+		return (cur_view, tokens)
+	name = tokens.pop(0)
+	return locate_view(tokens, dct[name])
+
 ##----------------------------------------------------------------##
 
 class Twist (object):
@@ -123,10 +143,7 @@ class Twist (object):
 		frags = env['PATH_INFO'].strip('/').split('/')
 		method = env['REQUEST_METHOD'].lower()
 		try:
-			view, params = View._lookup_(frags)
-			if view.__name__ == 'View': return self.error(404)
-			if not hasattr(view, method): return self.error(405)
-
+			view, params = locate_view(frags)
 			view = view(env)
 			kw_params = self.extract_vars(view.request.params)
 			output = getattr(view,method)(*params, **kw_params)
@@ -138,6 +155,8 @@ class Twist (object):
 				return self.error(500, 'View must return str or unicode')
 		except Interrupt: 
 			pass
+		except UnknownHandler as ex:
+			return self.error(ex.code, ex.message)
 		except:
 			return self.error(400, traceback.format_exc() if DEV else '')
 
