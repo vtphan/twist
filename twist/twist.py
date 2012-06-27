@@ -60,11 +60,15 @@ class ViewBuilder(type):
 			new_class._alias_ = handle = dct.get('_alias_', convert_name(name))
 			if handle=='' and all(b.__name__!='View' for b in bases):
 				raise Exception('Empty _alias_ class must be subclass of View')
-			for base in bases:
-				if issubclass(base, View):
-					if handle in base._route_ and base is not View:
-						raise Exception('Duplicate handle: '+handle)
-					base._route_[handle] = new_class
+			
+			parent = [b for b in bases if issubclass(b,View)]
+			if len(parent)>1:
+				raise Exception('"%s" must derive from exactly one View'%name)
+			else:
+				if handle in parent[0]._route_ and parent[0] is not View:
+					raise Exception('Duplicate handle: '+handle)
+				parent[0]._route_[handle] = new_class
+				new_class._relative_path_ = os.path.join(parent[0]._relative_path_, handle)
 
 			# Set template
 			t_file = dct.get('_template_', None)
@@ -73,9 +77,18 @@ class ViewBuilder(type):
 		return new_class
 
 ##----------------------------------------------------------------##
-
+''' 
+	User-defined special variables:
+		_alias_
+		_template_			 
+	Hidden special variables:
+		_route_
+		_relative_path_
+		_tmpl_
+'''
 class View (threading.local):
 	__metaclass__ = ViewBuilder
+	_relative_path_ = ''
 
 	def __init__(self, env):
 		self.request = Request(env)
