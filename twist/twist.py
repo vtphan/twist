@@ -11,7 +11,7 @@ import traceback
 import threading
 from webob import Request, Response, static
 from urllib import urlencode
-from urlparse import parse_qs, urljoin
+from urlparse import parse_qs, urljoin, urlsplit, urlunsplit
 from jinja2 import Environment, PackageLoader
 
 LOGGING = True
@@ -53,6 +53,7 @@ def convert_name(name):
 ##----------------------------------------------------------------##
 class ViewBuilder(type):
 	def __new__(cls, name, bases, dct):
+		print '>', name
 		new_class = type.__new__(cls, name, bases, dct)
 		new_class._route_ = {'': new_class}
 		if name!='View':
@@ -60,7 +61,7 @@ class ViewBuilder(type):
 			new_class._alias_ = handle = dct.get('_alias_', convert_name(name))
 			if handle=='' and all(b.__name__!='View' for b in bases):
 				raise Exception('Empty _alias_ class must be subclass of View')
-			
+
 			parent = [b for b in bases if issubclass(b,View)]
 			if len(parent)>1:
 				raise Exception('"%s" must derive from exactly one View'%name)
@@ -73,14 +74,14 @@ class ViewBuilder(type):
 			# Set template
 			t_file = dct.get('_template_', None)
 			new_class._tmpl_ = jinja_env.get_template(t_file) if t_file else None
-		
+
 		return new_class
 
 ##----------------------------------------------------------------##
-''' 
+'''
 	User-defined special variables:
 		_alias_
-		_template_			 
+		_template_
 	Hidden special variables:
 		_route_
 		_relative_path_
@@ -94,19 +95,34 @@ class View (threading.local):
 		self.request = Request(env)
 		self.response = Response()
 
+	def _is_view(self): return True
+
 	def static_file(self, filename):
 		file_app = static.FileApp(os.path.join(STATIC_DIR, filename))
 		self.response = self.request.get_response(file_app)
 		raise Interrupt()
 
-	def error(self, code=500, message=''):
+	def error(self, code, message=''):
 	 	self.response.status = code
 	 	self.response.body = message
 	 	raise Interrupt()
 
-	def redirect(self, url, code=None):
-		self.response.status = code or 303 if self.request.http_version=='HTTP/1.1' else 302
-		self.response.location = urljoin(self.request.url, url)
+	def url(self, view, *args, **kwargs):
+		if type(view)==str:
+			if view.startswith('http://') or view.startswith('https://'):
+				return view
+			path = view
+		elif type(view)==type(View):
+			path = os.path.join(view._relative_path_, *[str(a) for a in args])
+		else:
+			self.error(500, 'redirect: url must be string or View instance')
+		qs = urlencode(kwargs)
+		fragment = kwargs.pop('fragment','')
+		return urlunsplit((self.request.scheme,self.request.host,path,qs,fragment))
+
+	def redirect(self, view, *args, **kwargs):
+		self.response.location = self.url(view,*args,**kwargs)
+		self.response.status = 303
 		raise Interrupt()
 
 	def render(self, **kw):
@@ -134,6 +150,9 @@ class View (threading.local):
 ##----------------------------------------------------------------##
 
 def locate_view(tokens, cur_view=View):
+	'''
+	Example: locate_view(['post','category','10'], View)
+	'''
 	dct = cur_view._route_
 	if len(tokens)==0:
 		if cur_view.__name__ == dct[''].__name__:
@@ -160,19 +179,20 @@ class Twist (object):
 			view = view(env)
 			kw_params = self.extract_vars(view.request.params)
 			output = getattr(view,method)(*params, **kw_params)
-			if isinstance(output,unicode): 
+			if isinstance(output,unicode):
 				view.response.text  = output
-			elif isinstance(output,str): 
+			elif isinstance(output,str):
 				view.response.body = output
 			else:
 				return self.error(500, 'View must return str or unicode')
-		except Interrupt: 
+		except Interrupt:
 			pass
 		except UnknownHandler as ex:
 			return self.error(ex.code, ex.message)
 		except:
 			return self.error(400, traceback.format_exc() if DEV else '')
 
+		print '>Status:', view.response.status
 		start_response(view.response.status, view.response.headers.items())
 		return view.response.body
 
