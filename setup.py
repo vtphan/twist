@@ -2,7 +2,7 @@ from distutils.core import setup
 
 setup(
     name='Twist',
-    version='0.1',
+    version='0.2.2',
     author='Vinhthuy Phan',
     author_email='vphan@memphis.edu',
     packages=['twist'],
@@ -13,6 +13,6 @@ setup(
     long_description='A wsgi web framework.',
     install_requires=[
         "webob",
-	"Jinja2",
+        "Jinja2",
     ],
 )
