@@ -12,8 +12,7 @@ import threading
 from webob import Request, Response, static
 from urllib import urlencode
 from urlparse import parse_qs, urljoin, urlsplit, urlunsplit
-from jinja2 import Environment, PackageLoader
-from .config import Config
+from jinja2 import Environment, FileSystemLoader
 
 HTTP_CODE = {
 	400 : '400 Bad Request',
@@ -22,9 +21,27 @@ HTTP_CODE = {
 	500 : '500 Interal Server Error',
 }
 
+class Config(object):
+	session_timeout = 3600
+	log = False
+	dev = True
+	app_dir = '.'
+	template_dir = 'template'
+	static_dir = 'static'
+
+	@classmethod
+	def get_template_dir(cls): return os.path.join(cls.app_dir, cls.template_dir)
+
+	@classmethod
+	def get_static_dir(cls): return os.path.join(cls.app_dir, cls.static_dir)
+
+	def __str__(self):
+		return '<Config: %s %s %s %s %s %s>' % ( self.session_timeout, \
+			self.log,self.dev,self.app_dir,self.template_dir,self.static_dir)
+
 ##------------------------------------------------------------------------##
 
-jinja_env = Environment(loader=PackageLoader('twist', Config.TEMPLATE_DIR))
+jj2 = None
 
 ##------------------------------------------------------------------------##
 class UnknownHandler (Exception):
@@ -42,6 +59,7 @@ class Interrupt (Exception):
 ##------------------------------------------------------------------------##
 
 class ViewBuilder(type):
+
 	def __new__(cls, name, bases, dct):
 		new_class = type.__new__(cls, name, bases, dct)
 		new_class._route_ = {'': new_class}
@@ -61,8 +79,12 @@ class ViewBuilder(type):
 				new_class._path_ = os.path.join(base[0]._path_, handle)
 
 			# Set template
+			global jj2
+			if jj2 == None:
+				loader = FileSystemLoader(Config.get_template_dir())
+				jj2 = Environment(loader=loader)
 			t = dct.get('_template_', None)
-			new_class._tmpl_ = jinja_env.get_template(t) if t else None
+			new_class._tmpl_ = jj2.get_template(t) if t else None
 
 		return new_class
 
@@ -86,8 +108,8 @@ class View (object):
 		self.args = None
 		self.kw_args = None
 
-	def static_file(self, filename):
-		file_app = static.FileApp(os.path.join(Config.STATIC_DIR, filename))
+	def static_file(self, fname):
+		file_app = static.FileApp(os.path.join(Config.get_static_dir(),fname))
 		self.response = self.request.get_response(file_app)
 		raise Interrupt()
 
@@ -144,7 +166,7 @@ class View (object):
 ##------------------------------------------------------------------------##
 class App (object):
 
-	def __init__(self, root=View, **config):
+	def __init__(self, root=View):
 		self.root = root
 
 	def __call__(self, env, start_response):
@@ -167,7 +189,7 @@ class App (object):
 		except UnknownHandler as ex:
 			return self.error(ex.code, ex.message)
 		except:
-			if Config.DEV: return self.error(400, traceback.format_exc())
+			if Config.dev: return self.error(400, traceback.format_exc())
 			else: return HTTP_CODE[400]
 
 		start_response(view.response.status, view.response.headers.items())
@@ -176,7 +198,7 @@ class App (object):
 	#----------------------------------------------------------------------
 	def error(self, code, message=''):
 		self.start_response(HTTP_CODE[code], [('Content-Type','text/plain')])
-		if Config.DEV:
+		if Config.dev:
 			print message or HTTP_CODE[code]
 		return message or HTTP_CODE[code]
 
