@@ -6,7 +6,6 @@ setup(
     author='Vinhthuy Phan',
     author_email='vphan@memphis.edu',
     packages=['twist'],
-    scripts=['twist/twist.py'],
     url='https://github.com/vtphan/twist',
     license='MIT',
     description='A wsgi web framework.',
