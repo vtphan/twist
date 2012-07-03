@@ -13,7 +13,7 @@ from webob import Request, Response, static
 from urllib import urlencode
 from urlparse import parse_qs, urljoin, urlsplit, urlunsplit
 from jinja2 import Environment, PackageLoader
-from config import Config
+from .config import Config
 
 HTTP_CODE = {
 	400 : '400 Bad Request',
