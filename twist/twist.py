@@ -13,12 +13,7 @@ from webob import Request, Response, static
 from urllib import urlencode
 from urlparse import parse_qs, urljoin, urlsplit, urlunsplit
 from jinja2 import Environment, PackageLoader
-
-LOGGING = True
-DEV = True
-APP_DIR = '.'
-TEMPLATE_DIR = './template'
-STATIC_DIR = './static'
+from config import Config
 
 HTTP_CODE = {
 	400 : '400 Bad Request',
@@ -27,7 +22,9 @@ HTTP_CODE = {
 	500 : '500 Interal Server Error',
 }
 
-jinja_env = Environment(loader=PackageLoader('twist', TEMPLATE_DIR))
+##------------------------------------------------------------------------##
+
+jinja_env = Environment(loader=PackageLoader('twist', Config.TEMPLATE_DIR))
 
 ##------------------------------------------------------------------------##
 class UnknownHandler (Exception):
@@ -86,9 +83,11 @@ class View (object):
 	def __init__(self, env):
 		self.request = Request(env)
 		self.response = Response()
+		self.args = None
+		self.kw_args = None
 
 	def static_file(self, filename):
-		file_app = static.FileApp(os.path.join(STATIC_DIR, filename))
+		file_app = static.FileApp(os.path.join(Config.STATIC_DIR, filename))
 		self.response = self.request.get_response(file_app)
 		raise Interrupt()
 
@@ -120,7 +119,12 @@ class View (object):
 			self.error(404, 'Template Not found')
 		self.response.content_type = 'text/html'
 		self.response.charset = 'utf-8'
-		return self._tmpl_.render(**kw)
+		rendered_page = self._tmpl_.render(**kw)
+		return rendered_page
+
+	def exec_view(self):
+		method = getattr(self, self.request.method.lower())
+		return method(*self.args, **self.kw_args)
 
 	@classmethod
 	def get(cls, *args, **kwargs): raise UnknownHandler(404)
@@ -147,14 +151,15 @@ class App (object):
 		self.start_response = start_response
 		try:
 			tokens = env['PATH_INFO'].strip('/').split('/')
-			view, args = locate_view(tokens, self.root)
-			view = view(env)
-			kw_args = extract_vars(view.request.params)
-			rv = getattr(view,view.request.method.lower())(*args, **kw_args)
-			if isinstance(rv,unicode):
-				view.response.text  = rv
-			elif isinstance(rv,str):
-				view.response.body = rv
+			view_cls, args = locate_view(tokens, self.root)
+			view = view_cls(env)
+			view.args = args
+			view.kw_args = extract_vars(view.request.params)
+			output = view.exec_view()
+			if isinstance(output, unicode):
+				view.response.text  = output
+			elif isinstance(output, str):
+				view.response.body = output
 			else:
 				return self.error(500, 'View must return str or unicode')
 		except Interrupt:
@@ -162,7 +167,8 @@ class App (object):
 		except UnknownHandler as ex:
 			return self.error(ex.code, ex.message)
 		except:
-			return self.error(400, traceback.format_exc() if DEV else HTTP_CODE[400])
+			if Config.DEV: return self.error(400, traceback.format_exc())
+			else: return HTTP_CODE[400]
 
 		start_response(view.response.status, view.response.headers.items())
 		return view.response.body
@@ -170,7 +176,7 @@ class App (object):
 	#----------------------------------------------------------------------
 	def error(self, code, message=''):
 		self.start_response(HTTP_CODE[code], [('Content-Type','text/plain')])
-		if DEV:
+		if Config.DEV:
 			print message or HTTP_CODE[code]
 		return message or HTTP_CODE[code]
 
