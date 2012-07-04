@@ -37,19 +37,15 @@ class ViewBuilder(type):
 				base[0]._route_[handle] = new_class
 				new_class._path_ = os.path.join(base[0]._path_, handle)
 
-			# Set template
-			global jj2
-			if jj2 == None:
-				jj2=Environment(loader=jj2_loader(App.get_template_dir()))
-			t = dct.get('_template_', None)
-			new_class._tmpl_ = jj2.get_template(t) if t else None
+			if '_template_' not in dct:
+				new_class._template_=new_class._path_.replace('/','_')+'.html'
 
 		return new_class
 
 ##------------------------------------------------------------------------##
 '''
-	User-defined special variables: _alias_, _template_
-	Hidden special variables: _route_, _path_, _tmpl_
+	User-defined class variables: _alias_, _template_
+	Injected class variables: _route_, _path_
 '''
 class View (object):
 	__metaclass__ = ViewBuilder
@@ -93,11 +89,14 @@ class View (object):
 		raise Interrupt()
 
 	def render(self, **kw):
-		if not hasattr(self, '_tmpl_'):
-			self.error(404, 'Template Not found')
+		global jj2
+		if jj2 == None:
+			jj2=Environment(loader=jj2_loader(App.get_template_dir()))
+		if type(self._template_)==str:
+			self._template_ = jj2.get_template(self._template_)
 		self.response.content_type = 'text/html'
 		self.response.charset = 'utf-8'
-		rendered_page = self._tmpl_.render(**kw)
+		rendered_page = self._template_.render(**kw)
 		return rendered_page
 
 	def exec_view(self):
@@ -128,8 +127,9 @@ class App (object):
 	template_dir = 'template'
 	static_dir = 'static'
 
-	def __init__(self, root=View):
+	def __init__(self, main_file_name, root=View):
 		self.root = root
+		App.app_dir = os.path.dirname(os.path.realpath(main_file_name))
 
 	def __call__(self, env, start_response):
 		self.start_response = start_response
