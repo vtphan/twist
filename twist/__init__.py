@@ -1,8 +1,7 @@
 from twist import *
-from config import *
 
 __all__ = [
-	'App', 'View', 'locate_view', 'Config',
+	'App', 'View', 'locate_view',
 ]
 
 __author__ = 'Vinhthuy Phan'

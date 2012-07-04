@@ -3,63 +3,22 @@ package: twist
 version: 0.2.2
 author: Vinhthuy Phan
 '''
-import re
 import os
+import re
 import sys
 import types
 import traceback
-import threading
 from webob import Request, Response, static
 from urllib import urlencode
 from urlparse import parse_qs, urljoin, urlsplit, urlunsplit
-from jinja2 import Environment, FileSystemLoader
-
-HTTP_CODE = {
-	400 : '400 Bad Request',
-	404 : '404 Not Found',
-	405 : '405 Method Not Allowed',
-	500 : '500 Interal Server Error',
-}
-
-class Config(object):
-	session_timeout = 3600
-	log = False
-	dev = True
-	app_dir = '.'
-	template_dir = 'template'
-	static_dir = 'static'
-
-	@classmethod
-	def get_template_dir(cls): return os.path.join(cls.app_dir, cls.template_dir)
-
-	@classmethod
-	def get_static_dir(cls): return os.path.join(cls.app_dir, cls.static_dir)
-
-	def __str__(self):
-		return '<Config: %s %s %s %s %s %s>' % ( self.session_timeout, \
-			self.log,self.dev,self.app_dir,self.template_dir,self.static_dir)
-
-##------------------------------------------------------------------------##
+from jinja2 import Environment, FileSystemLoader as jj2_loader
+from .session import CookieSession
 
 jj2 = None
+Session = CookieSession
 
 ##------------------------------------------------------------------------##
-class UnknownHandler (Exception):
-	def __init__(self, code, message=''):
-		self.code = code
-		self.message = message
-
-	def __str__(self):
-		return self.message
-
-##------------------------------------------------------------------------##
-class Interrupt (Exception):
-	pass
-
-##------------------------------------------------------------------------##
-
 class ViewBuilder(type):
-
 	def __new__(cls, name, bases, dct):
 		new_class = type.__new__(cls, name, bases, dct)
 		new_class._route_ = {'': new_class}
@@ -81,8 +40,7 @@ class ViewBuilder(type):
 			# Set template
 			global jj2
 			if jj2 == None:
-				loader = FileSystemLoader(Config.get_template_dir())
-				jj2 = Environment(loader=loader)
+				jj2=Environment(loader=jj2_loader(App.get_template_dir()))
 			t = dct.get('_template_', None)
 			new_class._tmpl_ = jj2.get_template(t) if t else None
 
@@ -90,17 +48,13 @@ class ViewBuilder(type):
 
 ##------------------------------------------------------------------------##
 '''
-	User-defined special variables:
-		_alias_
-		_template_
-	Hidden special variables:
-		_route_
-		_path_
-		_tmpl_
+	User-defined special variables: _alias_, _template_
+	Hidden special variables: _route_, _path_, _tmpl_
 '''
 class View (object):
 	__metaclass__ = ViewBuilder
 	_path_ = ''
+	secret = 'the_best_way_to_serve_whiskey'
 
 	def __init__(self, env):
 		self.request = Request(env)
@@ -109,7 +63,7 @@ class View (object):
 		self.kw_args = None
 
 	def static_file(self, fname):
-		file_app = static.FileApp(os.path.join(Config.get_static_dir(),fname))
+		file_app = static.FileApp(os.path.join(App.get_static_dir(),fname))
 		self.response = self.request.get_response(file_app)
 		raise Interrupt()
 
@@ -165,6 +119,12 @@ class View (object):
 
 ##------------------------------------------------------------------------##
 class App (object):
+	session_timeout = 3600
+	log = False
+	dev = True
+	app_dir = '.'
+	template_dir = 'template'
+	static_dir = 'static'
 
 	def __init__(self, root=View):
 		self.root = root
@@ -189,7 +149,7 @@ class App (object):
 		except UnknownHandler as ex:
 			return self.error(ex.code, ex.message)
 		except:
-			if Config.dev: return self.error(400, traceback.format_exc())
+			if App.dev: return self.error(400, traceback.format_exc())
 			else: return HTTP_CODE[400]
 
 		start_response(view.response.status, view.response.headers.items())
@@ -198,7 +158,7 @@ class App (object):
 	#----------------------------------------------------------------------
 	def error(self, code, message=''):
 		self.start_response(HTTP_CODE[code], [('Content-Type','text/plain')])
-		if Config.dev:
+		if App.dev:
 			print message or HTTP_CODE[code]
 		return message or HTTP_CODE[code]
 
@@ -206,6 +166,16 @@ class App (object):
 		from wsgiref.simple_server import make_server
 		print 'serving on port', port
 		make_server(host, port, self).serve_forever()
+
+	@classmethod
+	def get_template_dir(c): return os.path.join(c.app_dir, c.template_dir)
+
+	@classmethod
+	def get_static_dir(c): return os.path.join(c.app_dir, c.static_dir)
+
+	def __str__(self):
+		return '<App: %s %s %s %s %s %s>' % ( self.session_timeout, \
+			self.log,self.dev,self.app_dir,self.template_dir,self.static_dir)
 
 ##------------------------------------------------------------------------##
 ## UTILITIES
@@ -225,14 +195,6 @@ def locate_view(tokens, cur_view=View):
 	return locate_view(tokens, dct[name])
 
 ##------------------------------------------------------------------------##
-def convert_name(name):
-	''' convert camelcase names to pretty paths:
-		Example:  convert_name(ArticleByMonth) -> article-by-month
-	'''
-	s = re.sub('(.)([A-Z][a-z]+)', r'\1-\2', name)
-	return re.sub('([a-z0-9])([A-Z])', r'\1-\2', s).lower().strip('/')
-
-##------------------------------------------------------------------------##
 def extract_vars(form):
 	d = {}
 	for key, value in form.items():
@@ -245,6 +207,33 @@ def extract_vars(form):
 		else:
 			d[key]=[d[key],value]
 	return d
+
 ##------------------------------------------------------------------------##
+def convert_name(name):
+	''' convert camelcase names to pretty paths:
+		Example:  convert_name(ArticleByMonth) -> article-by-month
+	'''
+	s = re.sub('(.)([A-Z][a-z]+)', r'\1-\2', name)
+	return re.sub('([a-z0-9])([A-Z])', r'\1-\2', s).lower().strip('/')
+
+##------------------------------------------------------------------------##
+class Interrupt (Exception):
+	pass
+
+class UnknownHandler (Exception):
+	def __init__(self, code, message=''):
+		self.code = code
+		self.message = message
+
+	def __str__(self):
+		return self.message
+
+##------------------------------------------------------------------------##
+HTTP_CODE = {
+	400 : '400 Bad Request',
+	404 : '404 Not Found',
+	405 : '405 Method Not Allowed',
+	500 : '500 Interal Server Error',
+}
 
 
