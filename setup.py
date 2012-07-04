@@ -13,5 +13,6 @@ setup(
     install_requires=[
         "webob",
         "Jinja2",
+        "itsdangerous",
     ],
 )
