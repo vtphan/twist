@@ -1,4 +1,4 @@
-from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
+from itsdangerous import URLSafeTimedSerializer, BadSignature
 
 SESSION_COOKIE_NAME = 'twist-session'
 
@@ -10,7 +10,10 @@ class CookieSession(object):
 		self.serializer = URLSafeTimedSerializer(secret)
 		self.modified = False
 		s = self.request.cookies.get(SESSION_COOKIE_NAME)
-		self.session = self.serializer.loads(s) if s else {}
+		try:
+			self.session = self.serializer.loads(s) if s else {}
+		except BadSignature:
+			self.session = {}
 
 	def get(self, key, default=None):
 		return self.session[key] if key in self.session else default
