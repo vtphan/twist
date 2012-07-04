@@ -61,6 +61,8 @@ class View (object):
 		self.response = Response()
 		self.args = None
 		self.kw_args = None
+		self.session = Session(self.request, self.response, \
+			App.session_timeout, self.secret)
 
 	def static_file(self, fname):
 		file_app = static.FileApp(os.path.join(App.get_static_dir(),fname))
@@ -144,6 +146,7 @@ class App (object):
 				view.response.body = output
 			else:
 				return self.error(500, 'View must return str or unicode')
+			view.session.save()
 		except Interrupt:
 			pass
 		except UnknownHandler as ex:
@@ -162,7 +165,7 @@ class App (object):
 			print message or HTTP_CODE[code]
 		return message or HTTP_CODE[code]
 
-	def run(self, host='', port=8000):
+	def run(self, host='127.0.0.1', port=8000):
 		from wsgiref.simple_server import make_server
 		print 'serving on port', port
 		make_server(host, port, self).serve_forever()
