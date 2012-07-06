@@ -12,7 +12,7 @@ from webob import Request, Response, static
 from urllib import urlencode
 from urlparse import parse_qs, urljoin, urlsplit, urlunsplit
 from jinja2 import Environment, FileSystemLoader as jj2_loader
-from .session import CookieSession
+from session import CookieSession
 
 jj2 = None
 Session = CookieSession
@@ -65,10 +65,10 @@ class View (object):
 		self.response = self.request.get_response(file_app)
 		raise Interrupt()
 
-	def error(self, code, message=''):
+	def error(self, code, message='', interrupt=True):
 	 	self.response.status = code
 	 	self.response.body = message
-	 	raise Interrupt()
+	 	if interrupt: raise Interrupt()
 
 	def url(self, view, *args, **kwargs):
 		if type(view)==str:
@@ -95,28 +95,25 @@ class View (object):
 		if type(self._template_)==str:
 			self._template_ = jj2.get_template(self._template_)
 		self.response.content_type = 'text/html'
-		self.response.charset = 'utf-8'
-		rendered_page = self._template_.render(**kw)
-		return rendered_page
+		self.response.charset = 'utf8'
+		return self._template_.render(**kw)
 
 	def exec_view(self):
 		method = getattr(self, self.request.method.lower())
-		return method(*self.args, **self.kw_args)
+		o = method(*self.args, **self.kw_args)
+		if type(o) not in (str, unicode):
+			self.error(500, 'View must return str or unicode')
+		self.response.text = o if type(o) is unicode else unicode(o)
 
-	@classmethod
-	def get(cls, *args, **kwargs): raise UnknownHandler(404)
+	def get(self, *args, **kwargs): self.error(404, 'Unknown handler')
 
-	@classmethod
-	def post(cls, *args, **kwargs): raise UnknownHandler(404)
+	def post(self, *args, **kwargs): self.error(404, 'Unknown handler')
 
-	@classmethod
-	def put(cls, *args, **kwargs): raise UnknownHandler(404)
+	def put(self, *args, **kwargs): self.error(404, 'Unknown handler')
 
-	@classmethod
-	def delete(cls, *args, **kwargs): raise UnknownHandler(404)
+	def delete(self, *args, **kwargs): self.error(404, 'Unknown handler')
 
-	@classmethod
-	def head(cls, *args, **kwargs): raise UnknownHandler(404)
+	def head(self, *args, **kwargs): self.error(404, 'Unknown handler')
 
 ##------------------------------------------------------------------------##
 class App (object):
@@ -133,37 +130,24 @@ class App (object):
 
 	def __call__(self, env, start_response):
 		self.start_response = start_response
+		tokens = env['PATH_INFO'].strip('/').split('/')
+		view_cls, left_over_tokens = locate_view(tokens, self.root)
+		view = view_cls(env)
+		view.args = left_over_tokens
+		view.kw_args = extract_vars(view.request.params)
 		try:
-			tokens = env['PATH_INFO'].strip('/').split('/')
-			view_cls, args = locate_view(tokens, self.root)
-			view = view_cls(env)
-			view.args = args
-			view.kw_args = extract_vars(view.request.params)
-			output = view.exec_view()
-			if isinstance(output, unicode):
-				view.response.text  = output
-			elif isinstance(output, str):
-				view.response.body = output
-			else:
-				return self.error(500, 'View must return str or unicode')
+			view.exec_view()
 			view.session.save()
 		except Interrupt:
 			pass
-		except UnknownHandler as ex:
-			return self.error(ex.code, ex.message)
 		except:
-			if App.dev: return self.error(400, traceback.format_exc())
-			else: return HTTP_CODE[400]
+			mesg = traceback.format_exc() if App.dev else HTTP_CODE[400]
+			view.error(400, mesg, interrupt=False)
 
 		start_response(view.response.status, view.response.headers.items())
-		return view.response.body
+		return [view.response.body]
 
 	#----------------------------------------------------------------------
-	def error(self, code, message=''):
-		self.start_response(HTTP_CODE[code], [('Content-Type','text/plain')])
-		if App.dev:
-			print message or HTTP_CODE[code]
-		return message or HTTP_CODE[code]
 
 	def run(self, host='127.0.0.1', port=8000):
 		from wsgiref.simple_server import make_server
@@ -201,14 +185,10 @@ def locate_view(tokens, cur_view=View):
 def extract_vars(form):
 	d = {}
 	for key, value in form.items():
-		if isinstance(value,list) and len(value)==1:
-			value = value[0]
-		if not key in d:
-			d[key] = value
-		elif isinstance(d[key],list):
-			d[key].append(value)
-		else:
-			d[key]=[d[key],value]
+		if isinstance(value,list) and len(value)==1: value = value[0]
+		if not key in d: d[key] = value
+		elif isinstance(d[key],list): d[key].append(value)
+		else: d[key]=[d[key],value]
 	return d
 
 ##------------------------------------------------------------------------##
@@ -222,14 +202,6 @@ def convert_name(name):
 ##------------------------------------------------------------------------##
 class Interrupt (Exception):
 	pass
-
-class UnknownHandler (Exception):
-	def __init__(self, code, message=''):
-		self.code = code
-		self.message = message
-
-	def __str__(self):
-		return self.message
 
 ##------------------------------------------------------------------------##
 HTTP_CODE = {
