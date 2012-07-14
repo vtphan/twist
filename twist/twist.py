@@ -148,6 +148,9 @@ class Twist (object):
 	def __init__(self):
 		Hook._on_setup()
 
+	def __del__(self):
+		Hook._on_teardown()
+
 	def __call__(self, env, start_response):
 		tokens = env['PATH_INFO'].strip('/').split('/')
 		view_cls, args = locate_view(tokens, View)
@@ -159,7 +162,7 @@ class Twist (object):
 			Hook._after_execute_view(view)
 			view.session.save()
 		except Interrupt:
-			pass
+			view.session.save()
 		except:
 			if Twist.mode == 'Testing': mesg = traceback.format_exc()
 			else: mesg = HTTP_CODE[400]
@@ -192,8 +195,7 @@ class Twist (object):
 		try:
 			make_server(host, port, self).serve_forever()
 		except KeyboardInterrupt:
-			print 'closing...'
-			Hook._on_teardown()
+			print 'stop serving...'
 
 	@classmethod
 	def auto_path_gen(cls, name):
@@ -226,6 +228,7 @@ class Interrupt (Exception):
 ##------------------------------------------------------------------------##
 HTTP_CODE = {
 	400 : '400 Bad Request',
+	401 : '401 Unauthorized',
 	404 : '404 Not Found',
 	405 : '405 Method Not Allowed',
 	500 : '500 Interal Server Error',

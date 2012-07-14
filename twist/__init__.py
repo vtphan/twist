@@ -1,9 +1,10 @@
 from twist import *
 from hooks.sqlite import Sqlite
-from hooks.postgres import Postgres
+from postgres import Postgres
+from auth import Auth
 
 __all__ = [
-	'App', 'View', 'locate_view', 'Sqlite', 'Postgres'
+	'App', 'View', 'locate_view', 'Sqlite', 'Postgres', 'Auth'
 ]
 
 __author__ = 'Vinhthuy Phan'
