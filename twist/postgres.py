@@ -1,7 +1,7 @@
 '''
 db = Postgres(database, user, password)
 with db:
-	db.execute(...)
+	db.execute(sql, values)
 
 '''
 import psycopg2

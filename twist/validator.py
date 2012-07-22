@@ -27,6 +27,9 @@ def is_between(m,n):
 def is_atmost(n):
 	return lambda value: True if value <= n else '%s > %s' % (str(value),str(n))
 
+def is_atleast(n):
+	return lambda value: True if value >= n else '%s < %s' % (str(value),str(n))
+
 def is_in(*things):
 	return lambda value: True if value in things else \
 		'%s not in %s' % (str(value), str(things))
@@ -58,3 +61,30 @@ def is_url(value):
 def is_numeric(value):
 	return True if isinstance(value, (int, long, float)) else \
 		'%s not a numeric' % str(value)
+
+def is_int(value):
+	return True if isinstance(value,int) else '%s not an int' % str(value)
+
+def is_long(value):
+	return True if isinstance(value,long) else '%s not a long' % str(value)
+
+def is_float(value):
+	return True if isinstance(value,float) else '%s not a float' % str(value)
+
+def is_bool(value):
+	return True if isinstance(value,bool) else '%s not a bool' % str(value)
+
+def is_str(value):
+	return True if isinstance(value,str) else '%s not a str' % str(value)
+
+def is_unicode(value):
+	return True if isinstance(value,unicode) else '%s not a unicode' % str(value)
+
+def is_month(value):
+	return True if value.lower() in ('january','february','march','april',\
+		'may','june','july','august','september','october','november',\
+		'december') else '%s invalid month' % str(value)
+
+def is_weekday(value):
+	return True if value.lower() in ('monday','tuesday','wednesday','thursday',\
+		'friday','saturday','sunday') else '%s invalid weekday' % str(value)
