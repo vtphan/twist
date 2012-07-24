@@ -3,15 +3,19 @@ import time
 import datetime
 import json
 import inspect
-#
+from validator import *
+
 #--------------------------------------------------------------------
-#
+# Types
+#--------------------------------------------------------------------
+
 class BaseType(object):
 	def __init__(self, t):
 		self.type = t
 
 	# return value of a string v, or object of the same type as self.type
 	def value(self, v):
+		if v==None: return None
 		try:
 			return self.type(v)
 		except:
@@ -20,13 +24,18 @@ class BaseType(object):
 	def serialize(self, v):
 		return str(v)
 
+	def __str__(self):
+		return str(self.type)
 
 class DatetimeType( BaseType ):
 	def __init__(self):
 		super(DatetimeType, self).__init__(datetime.datetime)
 
 	def value(self, v):
-		if type(v) == datetime.datetime: return v
+		if v is None: return None
+		if isinstance(v, datetime.datetime): return v
+		if not isinstance(v, (str,unicode)):
+			raise TypeError('%s not an instance of Datetime' % str(v))
 		if '.' in v:
 			(y, m, d, hh, mm, ss, t0, t1, t2) = time.strptime(v,'%Y-%m-%d %H:%M:%S.%f')
 		else:
@@ -39,7 +48,10 @@ class DateType( BaseType ):
 		super(DateType, self).__init__(datetime.date)
 
 	def value(self, v):
-		if type(v) == datetime.date: return v
+		if v is None: return None
+		if isinstance(v, datetime.date): return v
+		if not isinstance(v, (str,unicode)):
+			raise TypeError('%s not an instance of Date' % str(v))
 		(y, m, d, hh, mm, ss, t0, t1, t2) = time.strptime(v,'%Y-%m-%d')
 		return datetime.date(y, m, d)
 
@@ -51,7 +63,10 @@ class TimeType( BaseType ):
 		super(TimeType, self).__init__(datetime.time)
 
 	def value(self, v):
-		if type(v) == datetime.time: return v
+		if v is None: return None
+		if isinstance(v, datetime.time): return v
+		if not isinstance(v, (str,unicode)):
+			raise TypeError('%s not an instance of Time' % str(v))
 
 		''' Formats:
 			hh:mm:ss [am/pm]
@@ -89,9 +104,10 @@ class BooleanType( BaseType ):
 		super(BooleanType,self).__init__(bool)
 
 	def value(self, v):
+		if v is None: return None
 		if v in ('True', True): return True
 		if v in ('False', False): return False
-		raise TypeError('invalid boolean type %s' % v)
+		raise TypeError('%s not an instance of Boolean' % v)
 
 class VarType( BaseType ):
 	def __init__(self):
@@ -124,99 +140,106 @@ class InvalidField( Exception ):
     def __str__(self):
         return '%s.' % (self.error,)
 
+
+#--------------------------------------------------------------------
+# EXPRESSIONS
+#--------------------------------------------------------------------
+
+class Expression(object):
+	''' Boolean expressions '''
+	def __init__(self, op, *operands):
+		self.op = op
+		self.operands = operands
+
+	def eval(self):
+		p=[o.eval() if isinstance(o, Expression) else o for o in self.operands]
+		return self.op(*p)
+
+	def __str__(self):
+		params = ', '.join([str(o) for o in self.operands])
+		return '%s(%s)' % (self.op.name, params)
+
+	def __invert__(self):
+		return Expression(is_not(), self)
+
+	def __and__(self, other):
+		return Expression(is_both(), self, other)
+
+	def __or__(self, other):
+		return Expression(is_either(), self, other)
+
+	def postgresql_token_mapping(self, thing):
+		if thing in (False,True): return str(thing).upper()
+		if thing is None: return 'NULL'
+		return thing
+
+	def to_sql(self):
+		if self.op == None:
+			return 'xxx'
+		left = self.left.to_sql()
+		op = self.op.sql()
+		if not isinstance(self.right, Expression):
+			right = self.postgresql_token_mapping(self.right)
+		else:
+			right = self.right.to_sql()
+		format = '(%s %s %s)' if op=='OR' else '%s %s %s'
+		return format % (left, op, right)
+
+
 ##---------------------------------------------------------------------
-class Field(object):
+class CUExpression ( Expression ):
+	''' Comparable unary expressions have only one operand.
+		The operand is comparable, not the expression itself, which is boolean
+	'''
+	def __init__(self, op, value):
+		super(CUExpression,self).__init__(op, value)
+
+	def set_value(self, v):
+		self.operands = [ Expression(is_value(), v, self.type) ]
+
+	def get_value(self):
+		return self.operands[0].eval()
+
+	value = property(get_value, set_value)
+
+	# Compare "value" of the expression, not the expression itself
+	def __lt__(self, other):
+		return Expression(is_lt(), self.value, other)
+
+	def __le__(self, other):
+		return Expression(is_le(), self.value, other)
+
+	def __gt__(self, other):
+		return Expression(is_gt(), self.value, other)
+
+	def __ge__(self, other):
+		return Expression(is_ge(), self.value, other)
+
+	def __eq__(self, other):
+		return Expression(is_eq(), self.value, other)
+
+	def __ne__(self, other):
+		return Expression(is_ne(), self.value, other)
+
+
+class Field (CUExpression):
 	def __init__(self, field_type, *validators, **kw):
 		self.field_type = field_type
-		self.validators = validators
-		self.required = kw.get('required', False)
-		self.value = kw.get('default', None)
 		self.type = TypeFactory.get(field_type)
+		self.validators = validators
 		self.name = None
 		self.model = None
-
-	def validate(self):
-		self.value = self.type.value(self.value) if self.value!=None else None
-		for validator in self.validators:
-			rv = validator(self.value)
-			if rv != True:
-				return False, rv
-		return True, None
+		e = Expression(is_value(), kw.get('value',None), self.type)
+		super(Field,self).__init__(combine_validators(validators), e)
 
 	def serialize(self):
 		return self.type.serialize(self.value)
 
-	# def __str__(self):
-	# 	return '%s: %s' % (self.name, self.value)
-
-	# The left operand is a field; right operand is python value
-	def __lt__(self, other):
-		return Expression(self, '<', other)
-
-	def __le__(self, other):
-		return Expression(self, '<=', other)
-
-	def __gt__(self, other):
-		return Expression(self, '>', other)
-
-	def __ge__(self, other):
-		return Expression(self, '>=', other)
-
-	def __eq__(self, other):
-		return Expression(self, '==', other)
-
-	def __ne__(self, other):
-		return Expression(self, '!=', other)
-
-##---------------------------------------------------------------------
-class Expression(object):
-	def __init__(self, left, op, right):
-		self.left = left
-		self.op = op
-		self.right = right
-		if op not in ('<','<=','>','>=','==','!=','AND','OR'):
-			raise Exception('Unknown operator: ' + op)
-
 	def __str__(self):
-		return '%s %s %s' % (self.left, self.op, self.right)
+		return '%s: %s' % (self.name, self.value)
 
-	def __and__(self, other):
-		return Expression(self, 'AND', other)
-
-	def __or__(self, other):
-		return Expression(self, 'OR', other)
-
-	def postgresql_token_mapping(self, thing):
-		if thing=='==': return '='
-		if thing in (False,True): return str(thing).upper()
-		return thing
-
-	def to_sql(self):
-		op = self.postgresql_token_mapping(self.op)
-		if isinstance(self.left, Field):
-			value = self.postgresql_token_mapping(self.right)
-			return '%s %s %s' % (self.left.name, op, value)
-		format = '(%s %s %s)' if op=='OR' else '%s %s %s'
-		return format % (self.left.to_sql(), op, self.right.to_sql())
-
-	def evaluate(self):
-		if self.op == '==':
-			return self.left.value == self.right
-		if self.op == '!=':
-			return self.left.value != self.right
-		if self.op == '>':
-			return self.left.value > self.right
-		if self.op == '>=':
-			return self.left.value >= self.right
-		if self.op == '<':
-			return self.left.value < self.right
-		if self.op == '<=':
-			return self.left.value <= self.right
-		if self.op == 'AND':
-			return self.left.evaluate() and self.right.evaluate()
-		if self.op == 'OR':
-			return self.left.evaluate() or self.right.evaluate()
-		raise Exception('Unknown operator in Expression: ' + self.op)
+	def __repr__(self):
+		return '%s: %s' % (self.name, super(Field,self).__str__())
 
 ##---------------------------------------------------------------------
 class field_property(object):
@@ -260,8 +283,7 @@ class Model(object):
 			field = Field(
 						f.field_type,
 						*f.validators,
-						required=f.required,
-						default=f.value
+						value=f.value
 			)
 			field.name = f.name
 			field.model = f.model
@@ -292,11 +314,9 @@ class Model(object):
 		pass
 
 	def validate(self):
-		# self.fields= [p for p in inspect.getmembers(self) if isinstance(p[1],Field)]
 		for name, field in self.fields.items():
-			is_valid, error = field.validate()
-			if not is_valid:
-				raise InvalidField('%s, (%s=%s)' % (error, name, field.value))
+			if field.eval() == False:
+				raise InvalidField('"%s" - %s' % (field.name, field.op.error))
 		return True
 
 	def to_dict(self):
@@ -306,5 +326,8 @@ class Model(object):
 		d = {name:field.serialize() for name,field in self.fields.items()}
 		return json.dumps(d)
 
-	# def __str__(self):
-	# 	return '{'+', '.join(i[1].__str__() for i in self.fields)+'}'
+	def __str__(self):
+	 	return '\n'.join(str(field) for name,field in self.fields.items())
+
+	def __repr__(self):
+	 	return '\n'.join(repr(field) for name,field in self.fields.items())
