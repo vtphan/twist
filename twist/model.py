@@ -284,7 +284,7 @@ class ModelMeta(type):
 class Model(object):
 	__metaclass__ = ModelMeta
 
-	def __init__(self, db=None):
+	def __init__(self, instance=None, db=None):
 		self.db = db
 		self.table_name = self.__class__.__name__
 
@@ -299,6 +299,16 @@ class Model(object):
 			field.field_name = f.field_name
 			field.model_name = f.model_name
 			self.fields[n] = field
+
+		if instance:
+			if isinstance(instance, dict):
+				for n, v in instance.items():
+					if n in self.fields:
+						setattr(self, n, v)
+			else:
+				for n in self.fields:
+					if hasattr(instance, n):
+						setattr(self, n, getattr(instance, n))
 
 	def _save_postgresql(self, names, values):
 		sql = 'INSERT INTO %s (%s) VALUES'%(self.table_name, ', '.join(names))
