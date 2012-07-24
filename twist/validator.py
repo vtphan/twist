@@ -32,7 +32,7 @@ class combine_validators(Validator):
 
 class is_required(Validator):
 	def __init__(self):
-		super(is_required, self).__init__('is_required', 'NOT NULL', None)
+		super(is_required, self).__init__('is_required', '!= NULL', None)
 
 	def __call__(self, value):
 		result = value is not None

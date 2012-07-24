@@ -150,6 +150,8 @@ class Expression(object):
 	def __init__(self, op, *operands):
 		self.op = op
 		self.operands = operands
+		self.field_name = None
+		self.model_name = None
 
 	def eval(self):
 		p=[o.eval() if isinstance(o, Expression) else o for o in self.operands]
@@ -168,23 +170,25 @@ class Expression(object):
 	def __or__(self, other):
 		return Expression(is_either(), self, other)
 
-	def postgresql_token_mapping(self, thing):
+	def sql_token_mapping(self, thing):
 		if thing in (False,True): return str(thing).upper()
 		if thing is None: return 'NULL'
 		return thing
 
 	def to_sql(self):
-		if self.op == None:
-			return 'xxx'
-		left = self.left.to_sql()
-		op = self.op.sql()
-		if not isinstance(self.right, Expression):
-			right = self.postgresql_token_mapping(self.right)
-		else:
-			right = self.right.to_sql()
-		format = '(%s %s %s)' if op=='OR' else '%s %s %s'
-		return format % (left, op, right)
-
+		if self.op.name in ('is_eq','is_ne','is_lt','is_le','is_gt','is_ge'):
+			if isinstance(self.operands[1], Expression):
+				right = self.operands[1].to_sql()
+			else:
+				right = self.sql_token_mapping(self.operands[1])
+			return '(%s %s %s)' % (self.field_name, self.op.sql_rep, right)
+		if self.op.name in ('is_both', 'is_either'):
+			left = self.operands[0].to_sql()
+			right = self.operands[1].to_sql()
+			return '(%s %s %s)' % (left, self.op.sql_rep, right)
+		if self.op.name in ('is_not',):
+			return '(%s %s)' % (self.op.sql_rep, self.operands[0].to_sql())
+		return ''
 
 ##---------------------------------------------------------------------
 class CUExpression ( Expression ):
@@ -203,23 +207,29 @@ class CUExpression ( Expression ):
 	value = property(get_value, set_value)
 
 	# Compare "value" of the expression, not the expression itself
+	def new_expression(self, op, other):
+		e = Expression(op, self.value, other)
+		e.field_name = self.field_name
+		e.model_name = self.model_name
+		return e
+
 	def __lt__(self, other):
-		return Expression(is_lt(), self.value, other)
+		return self.new_expression(is_lt(), other)
 
 	def __le__(self, other):
-		return Expression(is_le(), self.value, other)
+		return self.new_expression(is_le(), other)
 
 	def __gt__(self, other):
-		return Expression(is_gt(), self.value, other)
+		return self.new_expression(is_gt(), other)
 
 	def __ge__(self, other):
-		return Expression(is_ge(), self.value, other)
+		return self.new_expression(is_ge(), other)
 
 	def __eq__(self, other):
-		return Expression(is_eq(), self.value, other)
+		return self.new_expression(is_eq(), other)
 
 	def __ne__(self, other):
-		return Expression(is_ne(), self.value, other)
+		return self.new_expression(is_ne(), other)
 
 
 class Field (CUExpression):
@@ -227,8 +237,6 @@ class Field (CUExpression):
 		self.field_type = field_type
 		self.type = TypeFactory.get(field_type)
 		self.validators = validators
-		self.name = None
-		self.model = None
 		e = Expression(is_value(), kw.get('value',None), self.type)
 		super(Field,self).__init__(combine_validators(validators), e)
 
@@ -236,22 +244,25 @@ class Field (CUExpression):
 		return self.type.serialize(self.value)
 
 	def __str__(self):
-		return '%s: %s' % (self.name, self.value)
+		return '%s: %s' % (self.field_name, self.value)
 
 	def __repr__(self):
-		return '%s: %s' % (self.name, super(Field,self).__str__())
+		return '%s: %s' % (self.field_name, super(Field,self).__str__())
 
 ##---------------------------------------------------------------------
 class field_property(object):
-	def __init__(self, name):
-		self.name = name
+	def __init__(self, field_name):
+		self.field_name = field_name
 
 	def __get__(self, obj, objtype):
-		return obj.fields[self.name]
+		if obj is not None:
+			return obj.fields[self.field_name]
+		else:
+			return objtype._fields[self.field_name]
 
 	def __set__(self, obj, value):
 		if obj != None:
-			obj.fields[self.name].value = value
+			obj.fields[self.field_name].value = value
 		else:
 			raise Exception('cannot assign value')
 
@@ -264,8 +275,8 @@ class ModelMeta(type):
 		for a in dct:
 			if isinstance(dct[a], Field):
 				field = dct[a]
-				field.name = a
-				field.model = name
+				field.field_name = a
+				field.model_name = name
 				klass._fields[a] = field
 				setattr(klass, a, field_property(a))
 		return klass
@@ -285,8 +296,8 @@ class Model(object):
 						*f.validators,
 						value=f.value
 			)
-			field.name = f.name
-			field.model = f.model
+			field.field_name = f.field_name
+			field.model_name = f.model_name
 			self.fields[n] = field
 
 	def _save_postgresql(self, names, values):
@@ -316,7 +327,7 @@ class Model(object):
 	def validate(self):
 		for name, field in self.fields.items():
 			if field.eval() == False:
-				raise InvalidField('"%s" - %s' % (field.name, field.op.error))
+				raise InvalidField('"%s" - %s' % (field.field_name, field.op.error))
 		return True
 
 	def to_dict(self):
