@@ -153,6 +153,7 @@ class Expression(object):
 		self.field_name = None
 		self.model_name = None
 
+	# returns True of False
 	def eval(self):
 		p=[o.eval() if isinstance(o, Expression) else o for o in self.operands]
 		return self.op(*p)
@@ -176,19 +177,28 @@ class Expression(object):
 		return thing
 
 	def to_sql(self):
-		if self.op.name in ('is_eq','is_ne','is_lt','is_le','is_gt','is_ge'):
+		if self.op.name in ('is_eq','is_ne','is_lt','is_le','is_gt','is_ge', \
+				'is_in', 'is_notin'):
 			if isinstance(self.operands[1], Expression):
-				right = self.operands[1].to_sql()
+				R, values = self.operands[1].to_sql()
 			else:
-				right = self.sql_token_mapping(self.operands[1])
-			return '(%s %s %s)' % (self.field_name, self.op.sql_rep, right)
+				R = '%s'
+				values = [self.sql_token_mapping(self.operands[1])]
+			return (self.op.sql(self.field_name, R), values)
 		if self.op.name in ('is_both', 'is_either'):
-			left = self.operands[0].to_sql()
-			right = self.operands[1].to_sql()
-			return '(%s %s %s)' % (left, self.op.sql_rep, right)
+			L, L_values = self.operands[0].to_sql()
+			R, R_values = self.operands[1].to_sql()
+			return (self.op.sql(L,R), L_values + R_values)
 		if self.op.name in ('is_not',):
-			return '(%s %s)' % (self.op.sql_rep, self.operands[0].to_sql())
-		return ''
+			R, values =	self.operands[0].to_sql()
+			return (self.op.sql(R), values)
+		return ('', [''])
+
+
+	def to_mongo(self):
+		if self.op.name in ('is_eq','is_ne','is_lt','is_le','is_gt','is_ge', \
+				'is_in', 'is_notin'):
+			return self.op.mongo(self.field_name, )
 
 ##---------------------------------------------------------------------
 class CUExpression ( Expression ):
@@ -230,6 +240,9 @@ class CUExpression ( Expression ):
 
 	def __ne__(self, other):
 		return self.new_expression(is_ne(), other)
+
+	def is_in(self, other):
+		return self.new_expression(is_in(), other)
 
 
 class Field (CUExpression):
@@ -317,22 +330,25 @@ class Model(object):
 
 	# if self exists, save --> update
 	def save(self):
-		names = [ n for n,f in self.fields ]
-		values = tuple( f.value for n,f in self.fields )
+		names = [ n for n,f in self.fields.items() ]
+		values = tuple( f.value for n,f in self.fields.items() )
 		sql = self._save_postgresql(names, values)
 		if self.db != None:
 			with self.db:
 				db.execute(sql, values)
 		else:
-			print sql, values
+			return sql, values
 
+	# Employee.update(('age', 20), ('name', 'John'), query)
+	# e.update(('age', 20), ('name', 'John'), key=('name',))
 	@classmethod
 	def update(self, expr):
+		''' update <table> set <column> = <expr> where <condition>'''
 		pass
 
 	@classmethod
 	def find(self, expr):
-		pass
+		query = 'SELECT FROM %s WHERE %s;'
 
 	def validate(self):
 		for name, field in self.fields.items():
