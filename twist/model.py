@@ -171,20 +171,15 @@ class Expression(object):
 	def __or__(self, other):
 		return Expression(is_either(), self, other)
 
-	def sql_token_mapping(self, thing):
-		if thing in (False,True): return str(thing).upper()
-		if thing is None: return 'NULL'
-		return thing
 
 	def to_sql(self):
 		if self.op.name in ('is_eq','is_ne','is_lt','is_le','is_gt','is_ge', \
 				'is_in', 'is_notin'):
-			if isinstance(self.operands[1], Expression):
-				R, values = self.operands[1].to_sql()
+			if isinstance(self.operands[1], Field):
+				values = [self.operands[1].value]
 			else:
-				R = '%s'
-				values = [self.sql_token_mapping(self.operands[1])]
-			return (self.op.sql(self.field_name, R), values)
+				values = [self.operands[1]]
+			return (self.op.sql(self.field_name, '%s'), values)
 		if self.op.name in ('is_both', 'is_either'):
 			L, L_values = self.operands[0].to_sql()
 			R, R_values = self.operands[1].to_sql()
@@ -198,7 +193,14 @@ class Expression(object):
 	def to_mongo(self):
 		if self.op.name in ('is_eq','is_ne','is_lt','is_le','is_gt','is_ge', \
 				'is_in', 'is_notin'):
-			return self.op.mongo(self.field_name, )
+			return self.op.mongo(self.field_name, self.operands[1])
+		if self.op.name in ('is_both', 'is_either'):
+			L = self.operands[0].to_mongo()
+			R = self.operands[1].to_mongo()
+			return self.op.mongo(L,R)
+		if self.op.name in ('is_not',):
+			return self.op.mongo(self.operands[0].to_mongo())
+		return {}
 
 ##---------------------------------------------------------------------
 class CUExpression ( Expression ):
@@ -257,10 +259,17 @@ class Field (CUExpression):
 		return self.type.serialize(self.value)
 
 	def __str__(self):
-		return '%s: %s' % (self.field_name, self.value)
+		return self.value if self.value is not None else 'None'
 
 	def __repr__(self):
 		return '%s: %s' % (self.field_name, super(Field,self).__str__())
+
+
+class _Q (object):
+	def __getattribute__(self, name):
+		return Field('varchar', name)
+
+Q = _Q()
 
 ##---------------------------------------------------------------------
 class field_property(object):
