@@ -6,6 +6,7 @@ author: Vinhthuy Phan
 import os
 import re
 import sys
+import json
 import types
 import traceback
 from webob import Request, Response, static
@@ -22,33 +23,84 @@ ViewConfig = namedtuple('ViewConfig',
 	['working_directory', 'secret', 'session_timeout'])
 
 ##------------------------------------------------------------------------##
+class Route (object):
+	table = {'': None}
+	path = {}
+	view = {}
+
+	@classmethod
+	def add(cls, name, obj):
+		''' Route.add('ArticleUpdate', klass) '''
+		cls.view[name] = obj
+		tokens = cls.split_name(name,[])
+		cls.path[name] = os.path.join(*tokens)
+		cls.add_tokens(tokens, obj, cls.table)
+
+	@classmethod
+	def lookup(cls, path):
+		''' Route.lookup('/article/update') '''
+		tokens = path.strip('/').split('/')
+		return cls.lookup_tokens(tokens, cls.table)
+
+	@classmethod
+	def add_tokens(cls, tokens, obj, table):
+		if tokens and tokens[0]:
+			key = tokens.pop(0)
+			if key not in table:
+				table[key] = {'': None}
+			cls.add_tokens(tokens, obj, table[key])
+		else:
+			table[''] = obj
+
+	@classmethod
+	def lookup_tokens(cls, tokens, table):
+		if tokens and tokens[0] in table:
+			key = tokens.pop(0)
+			obj, params = cls.lookup_tokens(tokens, table[key])
+			if obj is not None:
+				return (obj, params)
+			params.insert(0, key)
+			return (table[''], params)
+		return (table[''],tokens) if isinstance(table,dict) else (table, tokens)
+
+	@classmethod
+	def split_name(cls, name, route):
+		if name=='':
+			return route if route else ['']
+		for i in range(1, len(name)):
+			if name[i].isupper():
+				break
+		i = i if name[i].isupper() else i+1
+		token = name[:i].lower()
+		route.append(token if token!='root' else '')
+		return cls.split_name(name[i:], route)
+
+	@classmethod
+	def get_template_name(cls, name):
+		tokens = cls.split_name(name, [])
+		return ('_'.join(tokens) or 'root') + '.html'
+
+	@classmethod
+	def show(cls):
+		print 'Table: ', cls.table
+		print 'View: ', cls.view
+		print 'Path: ', cls.path
+
+##------------------------------------------------------------------------##
 class ViewBuilder(type):
 	def __new__(cls, name, bases, dct):
+		if 'client_side_target' not in dct:
+			dct['client_side_target'] = None
+
 		klass = type.__new__(cls, name, bases, dct)
-		setattr(klass, '_route_', {'': klass})
 		if name!='View':
-			handle = dct.get('key', Twist.auto_path_gen(name))
-			setattr(klass, 'key', handle)
-
-			base = [b for b in bases if issubclass(b,View)]
-			if len(base)>1:
-				raise Exception('"%s" must derive from exactly one View'%name)
-			else:
-				if handle in base[0]._route_ and base[0] is not View:
-					raise Exception('Duplicate handle: '+handle)
-				base[0]._route_[handle] = klass
-				setattr(klass, '_path_', os.path.join(base[0]._path_, handle))
-
-			if 'template' not in dct:
-				setattr(klass,'template',None)
+			Route.add(name, klass)
 			setattr(klass, '_templater_', None)
-
 		return klass
 
 ##------------------------------------------------------------------------##
 '''
-	User-defined class variables: key, template
-	Injected class variables: _route_, _path_, _templater_
+	Injected class variables: _templater_
 '''
 class View (object):
 	__metaclass__ = ViewBuilder
@@ -62,11 +114,11 @@ class View (object):
 			self.config.session_timeout, self.config.secret)
 
 	@classmethod
-	def setup(cls, file_loc=None, secret=None, session_timeout=None):
-		if file_loc is None:
+	def setup(cls, file_name=None, secret=None, session_timeout=None):
+		if file_name is None:
 			working_directory = cls.config.working_directory
 		else:
-			working_directory = os.path.dirname(os.path.realpath(file_loc))
+			working_directory = os.path.dirname(os.path.realpath(file_name))
 		if secret is None:
 			secret = cls.config.secret
 		if session_timeout is None:
@@ -80,7 +132,7 @@ class View (object):
 		return os.path.join(self.config.working_directory, 'static')
 
 	def static_file(self, fname):
-		file_app = static.FileApp(self.static_dir())
+		file_app = static.FileApp(os.path.join(self.static_dir(),fname))
 		self.response = self.request.get_response(file_app)
 		raise Interrupt()
 
@@ -91,15 +143,22 @@ class View (object):
 
 	def url(self, view, *args, **kwargs):
 		if type(view)==str:
-			if view.startswith('http://') or view.startswith('https://'):
+			if view in Route.path:
+				path = os.path.join(Route.path[view], *[str(a) for a in args])
+				view = Route.view[view]
+			elif view.startswith('http://') or view.startswith('https://'):
 				return view
-			path = view
+			else:
+				self.error(500, 'Unknown view: ' + view)
 		elif type(view)==type(View):
-			path = os.path.join(view._path_, *[str(a) for a in args])
+			path = os.path.join(Route.path[view.__name__], *[str(a) for a in args])
 		else:
 			self.error(500, 'redirect: url must be string or View instance')
 		qs = urlencode(kwargs)
-		frag = kwargs.pop('fragment','')
+		if view.client_side_target is None:
+			frag = kwargs.pop('fragment','')
+		else:
+			frag = 'rendered_by_client'
 		return urlunsplit((self.request.scheme,self.request.host,path,qs,frag))
 
 	def redirect(self, view, *args, **kwargs):
@@ -109,19 +168,27 @@ class View (object):
 
 	def render(self, **kw):
 		if self._templater_ is None:
-			if self.template is None:
-				self.error(500, 'Template not found')
+			template = Route.get_template_name(self.__class__.__name__)
 			try:
 				p = os.path.join(self.config.working_directory, 'template')
-				l = Environment(loader=jj2_loader(p))
-				self._templater_ = l.get_template(self.template)
+				if self.client_side_target is None:
+					l = Environment(loader=jj2_loader(p))
+					self._templater_ = l.get_template(template)
+				else:
+					self._templater_ = open(os.path.join(p, template)).read()
 			except TemplateNotFound:
-				self.error(500,self.template+' not found or view not set up')
+				self.error(500,'template not found: ' + template)
 			except:
-				self.error(500, 'Error processing '+self.template)
-		self.response.content_type = 'text/html'
+				self.error(500, 'Error processing ' + template)
 		self.response.charset = 'utf8'
-		return self._templater_.render(**kw)
+		if self.client_side_target is not None:
+			self.response.content_type = 'application/json'
+			t = dict(template=self._templater_,target=self.client_side_target,data=kw)
+			return json.dumps(t, default=self.serializer)
+		else:
+			self.response.content_type = 'text/html'
+			kw.update(url = self.url)
+			return self._templater_.render(**kw)
 
 	def __call__(self, *args, **kwargs):
 		method = getattr(self, self.request.method.lower())
@@ -140,20 +207,25 @@ class View (object):
 
 	def head(self, *args, **kwargs): self.error(404, 'Unknown handler')
 
+	def serializer(self, obj):
+		if hasattr(obj, 'isoformat'):
+			return obj.isoformat()
+		return obj
+
 ##------------------------------------------------------------------------##
 class Twist (object):
 	log = False
 	mode = 'Testing'
 
-	def __init__(self):
+	def __init__(self, file_name=None, secret=None, session_timeout=None):
+		View.setup(file_name, secret, session_timeout)
 		Hook._on_setup()
 
 	def __del__(self):
 		Hook._on_teardown()
 
 	def __call__(self, env, start_response):
-		tokens = env['PATH_INFO'].strip('/').split('/')
-		view_cls, args = locate_view(tokens, View)
+		view_cls, args = Route.lookup(env['PATH_INFO'])
 		view = view_cls(env)
 		kwargs = self.extract_vars(view.request.params)
 		try:
@@ -182,12 +254,10 @@ class Twist (object):
 
 	#----------------------------------------------------------------------
 	@classmethod
-	def setup(cls, log=False, mode='Testing', auto_path_gen=None):
+	def setup(cls, log=False, mode='Testing'):
 		assert mode in ('Production', 'Testing')
 		cls.log = log
 		cls.mode = mode
-		if auto_path_gen is not None:
-			cls.auto_path_gen = auto_path_gen
 
 	def run(self, host='127.0.0.1', port=8000):
 		from wsgiref.simple_server import make_server
@@ -197,31 +267,10 @@ class Twist (object):
 		except KeyboardInterrupt:
 			print 'stop serving...'
 
-	@classmethod
-	def auto_path_gen(cls, name):
-		''' convert camelcase names to pretty paths:
-			Example:  convert_name(ArticleByMonth) -> article-by-month
-		'''
-		name = name.replace('_','-')
-		s = re.sub('(.)([A-Z][a-z]+)', r'\1-\2', name)
-		return re.sub('([a-z0-9])([A-Z])', r'\1-\2', s).lower().strip('/')
-
 ##------------------------------------------------------------------------##
 ## UTILITIES
 ##------------------------------------------------------------------------##
-def locate_view(tokens, cur_view=View):
-	'''
-	Example: locate_view(['post','category','10'], View)
-	'''
-	dct = cur_view._route_
-	if len(tokens)==0 or tokens[0] not in dct:
-		if cur_view == dct['']:
-			return (cur_view, tokens)
-		return locate_view(tokens, dct[''])
-	name = tokens.pop(0)
-	return locate_view(tokens, dct[name])
 
-##------------------------------------------------------------------------##
 class Interrupt (Exception):
 	pass
 
